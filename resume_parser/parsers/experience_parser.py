@@ -253,7 +253,7 @@ class ExperienceParser:
         cleaned_line = clean_line(header_line)
         cleaned_line = DATE_RANGE_PATTERN.sub("", cleaned_line).strip(" ,()-–—~")
 
-        def is_location_part(part: str, idx: int) -> bool:
+        def is_location_part(part: str, idx: int, custom_parts: list[str] | None = None) -> bool:
             """Structural location test (no hardcoded place names)."""
             p = part.strip()
             if re.fullmatch(r"[A-Za-z]{2}", p):  # region/state code
@@ -264,10 +264,41 @@ class ExperienceParser:
                 return True
             if re.search(r",\s*[A-Za-z]{2}\b", p):  # "City, ST" within one part
                 return True
+            ref_parts = custom_parts if custom_parts is not None else parts
             # A locality immediately preceding a region/state code.
-            if idx + 1 < len(parts) and re.fullmatch(r"[A-Za-z]{2}", parts[idx + 1].strip()):
+            if idx + 1 < len(ref_parts) and re.fullmatch(r"[A-Za-z]{2}", ref_parts[idx + 1].strip()):
                 return True
             return False
+
+        dash_pattern = re.compile(r"\s+[-–—−]\s+|\s*[–—]\s*")
+        dash_parts = [p.strip() for p in dash_pattern.split(cleaned_line) if p.strip()]
+        if len(dash_parts) >= 2:
+            p1, p2 = dash_parts[0], dash_parts[1]
+            p3 = dash_parts[2] if len(dash_parts) > 2 else None
+            
+            if self._looks_like_title_line(p2) and not self._looks_like_title_line(p1):
+                position = p2
+                company = p1
+            else:
+                position = p1
+                company = p2
+                
+            address = p3 if p3 and is_location_part(p3, 2, dash_parts) else None
+            
+            company = clean_line(company)
+            position = clean_line(position)
+            if address:
+                address = clean_line(address)
+                
+            if "," in company:
+                comp_parts = [c.strip() for c in company.split(",") if c.strip()]
+                if len(comp_parts) >= 2:
+                    if is_location_part(comp_parts[-1], len(comp_parts)-1, comp_parts):
+                        if not address:
+                            address = comp_parts[-1]
+                        company = ", ".join(comp_parts[:-1]).strip()
+                        
+            return company, position, address
 
         parts = []
         at_matches = re.split(r"\s+at\s+|\s+@\s+", cleaned_line, flags=re.IGNORECASE)
