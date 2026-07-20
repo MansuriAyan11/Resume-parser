@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
-from resume_parser.utils.constants import COMMON_SKILL_DELIMITERS
+from resume_parser.utils.constants import ADDRESS_PATTERN, COMMON_SKILL_DELIMITERS
 from resume_parser.utils.text_utils import clean_line, deduplicate_preserve_order, split_lines
 
 logger = logging.getLogger(__name__)
@@ -67,9 +67,55 @@ class SkillsParser:
         return [clean_line(stripped)]
 
     def _split_by_delimiters(self, line: str) -> list[str]:
-        pattern = r"[,|;/•·▪◦●]+"
-        parts = re.split(pattern, line)
-        return [clean_line(part) for part in parts if clean_line(part)]
+        top_parts = self._split_respecting_parens(line)
+        result: list[str] = []
+        for part in top_parts:
+            result.extend(self._expand_parenthetical(part))
+        return [clean_line(part) for part in result if clean_line(part)]
+
+    def _split_respecting_parens(self, line: str) -> list[str]:
+        """Split on skill delimiters, but never inside (), [] or {}.
+
+        This prevents comma-separated items within a parenthetical group
+        (e.g. "MS Office (Word, Excel, PowerPoint)") from being torn into
+        broken fragments like "MS Office (Word" and "PowerPoint)".
+        """
+        parts: list[str] = []
+        buf: list[str] = []
+        depth = 0
+        for ch in line:
+            if ch in "([{":
+                depth += 1
+                buf.append(ch)
+            elif ch in ")]}":
+                depth = max(0, depth - 1)
+                buf.append(ch)
+            elif depth == 0 and ch in ",|;/•·▪◦●":
+                parts.append("".join(buf))
+                buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            parts.append("".join(buf))
+        return parts
+
+    def _expand_parenthetical(self, part: str) -> list[str]:
+        """Expand "Group (a, b, c)" into ["Group", "a", "b", "c"].
+
+        Only expands when the parenthetical is itself a delimited list of
+        two or more items; a single qualifier such as "Excel (Advanced)"
+        is left intact so proficiency notes are not mistaken for skills.
+        """
+        match = re.match(r"^(.*?)\s*\(([^)]*)\)\s*$", part.strip())
+        if not match:
+            return [part]
+        head = match.group(1).strip()
+        inner = match.group(2).strip()
+        if not re.search(r"[,;/|]", inner):
+            return [part]
+        items = [head] if head else []
+        items.extend(p.strip() for p in re.split(r"[,;/|]", inner) if p.strip())
+        return items or [part]
 
     def _has_delimiters(self, line: str) -> bool:
         return any(delim in line for delim in COMMON_SKILL_DELIMITERS if delim not in "-")
@@ -99,11 +145,16 @@ class SkillsParser:
         if re.search(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", skill) or re.search(r"\(\d{3}\)", skill):
             return False
 
-        # Filter out addresses / locations / dates / page headers
+        # Filter out addresses / locations / dates / page headers.
+        # Location filtering is structural (street types, "City, ST", ZIP)
+        # rather than a fixed list of place names, so it generalizes.
         skill_lower = skill.lower()
+        if re.search(r",\s*[A-Z]{2}\b", skill) or re.search(r"\b\d{5}(?:-\d{4})?\b", skill):
+            return False
+        if ADDRESS_PATTERN.search(skill):
+            return False
         noise_words = {
-            "sample", "page", "bellevue", "nebraska", "omaha", "street", "road", "westview",
-            "country club", "frederick", "northridge", "south", "north", "drive", "rd", "st",
+            "sample", "page", "street", "road", "drive", "rd", "st",
             "avenue", "ave", "lane", "ln", "court", "ct", "way", "plaza", "suite", "ste",
             "apartment", "apt", "zip", "postal", "phone", "email", "address", "resume",
             "curriculum", "vitae", "cv", "objective", "summary", "profile", "education",

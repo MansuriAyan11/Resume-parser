@@ -8,9 +8,12 @@ from dataclasses import dataclass
 from enum import Enum
 
 from resume_parser.utils.constants import (
+    ADDRESS_PATTERN,
+    DATE_RANGE_PATTERN,
     EDUCATION_SECTION_HEADERS,
     EXPERIENCE_SECTION_HEADERS,
     LANGUAGES_SECTION_HEADERS,
+    ORG_SUFFIX_PATTERN,
     OTHER_SECTION_HEADERS,
     SKILLS_SECTION_HEADERS,
 )
@@ -129,6 +132,13 @@ class SectionDetector:
         if not normalized or not normalized[0].isupper():
             return SectionType.UNKNOWN, ""
 
+        # Safeguard: never treat a company/date/address/contact line as a
+        # section header. These are entity lines, not headings, and letting
+        # them through causes whole blocks to be misrouted (e.g. a company
+        # named "Tech Solutions Inc." being read as a Skills section).
+        if self._looks_like_entity_line(normalized):
+            return SectionType.UNKNOWN, ""
+
         compact = re.sub(r"[^\w\s]", " ", normalized).strip()
         compact_lower = re.sub(r"\s+", " ", compact).lower()
 
@@ -153,8 +163,11 @@ class SectionDetector:
         if len(compact_lower.split()) <= 6 and any(re.search(pat, compact_lower, re.IGNORECASE) for pat in non_exp_patterns):
             return SectionType.OTHER, normalized
 
-        # Explicitly classify as SKILLS if it is a short line containing "skills", "knowledge", "technologies", "tech"
-        if len(compact_lower.split()) <= 6 and any(re.search(rf"\b{word}\b", compact_lower) for word in ("skills", "knowledge", "technologies", "tech")):
+        # Classify as SKILLS on a short header-like line only for genuine
+        # skills-header words. Broad substrings like "tech"/"knowledge" are
+        # intentionally excluded because they also occur inside company names
+        # and prose (e.g. "Tech Solutions Inc.").
+        if len(compact_lower.split()) <= 6 and any(re.search(rf"\b{word}\b", compact_lower) for word in ("skills", "competenc(?:y|ies)", "expertise", "proficienc(?:y|ies)")):
             if "language" in compact_lower:
                 return SectionType.LANGUAGES, normalized
             return SectionType.SKILLS, normalized
@@ -181,3 +194,33 @@ class SectionDetector:
                         return section_type, normalized
 
         return SectionType.UNKNOWN, ""
+
+    def _looks_like_entity_line(self, text: str) -> bool:
+        """Return True when a line is a data/entity line rather than a heading.
+
+        Company names, addresses, contact details and date ranges must never
+        be treated as section headers. Detection is purely structural so it
+        generalizes across resume templates.
+        """
+        # A genuine date *range* (two endpoints, e.g. "Jan 2022 - Present")
+        # signals a data line. A lone year like "(20xx)" is NOT disqualifying,
+        # because real section headers can carry a parenthetical year.
+        date_match = DATE_RANGE_PATTERN.search(text)
+        if date_match and date_match.group("start"):
+            return True
+        if re.search(r"[\w.\-]+@[\w.\-]+\.[a-z]{2,}", text, re.IGNORECASE):
+            return True
+        # Phone number (e.g. (402) 292-2345 or 402-292-2345).
+        if re.search(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}", text):
+            return True
+        # "City, ST" trailing state/region code.
+        if re.search(r",\s*[A-Z]{2}\b", text):
+            return True
+        # Street address.
+        if ADDRESS_PATTERN.search(text):
+            return True
+        # Organization/legal-entity suffix (company name).
+        if ORG_SUFFIX_PATTERN.search(text):
+            return True
+        return False
+

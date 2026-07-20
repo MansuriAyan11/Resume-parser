@@ -184,6 +184,23 @@ class EducationParser:
         if distinction_match:
             return clean_line(distinction_match.group(0))
 
+        # Grade/GPA value: capture the label and the numeric value even when
+        # words separate them (e.g. "GPA to date: 3.95/4.00" or
+        # "GPA in major: 3.84/4.00"). The intervening gap is bounded and must
+        # not cross digits or line breaks, so it stays on the same field.
+        grade_match = re.search(
+            r"\b(c?gpa|grade|percentage|percent)\b[^\d\n]{0,20}?"
+            r"(\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?%?)",
+            text,
+            re.IGNORECASE,
+        )
+        if grade_match:
+            label = grade_match.group(1)
+            if label.lower() in {"gpa", "cgpa"}:
+                label = label.upper()
+            value = grade_match.group(2).strip()
+            return clean_line(f"{label}: {value}")
+
         for pattern in CLASS_NAME_PATTERNS:
             match = re.search(
                 rf"({pattern}[\s:.-]*[\w\.\%/]+)",

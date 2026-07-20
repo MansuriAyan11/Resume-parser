@@ -149,6 +149,21 @@ ADDRESS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Generic organization/legal-entity suffixes used to recognize company names
+# by structure rather than by a fixed vocabulary of specific employers.
+ORG_SUFFIX_PATTERN = re.compile(
+    r"\b(?:inc|llc|l\.l\.c|ltd|limited|corp|corporation|co|company|"
+    r"gmbh|plc|pvt|pte|llp|lp|s\.a|s\.r\.l|b\.v|ag|nv|oy|ab)\b\.?",
+    re.IGNORECASE,
+)
+
+# Generic institution keywords for schools/universities (structure, not names).
+INSTITUTION_KEYWORD_PATTERN = re.compile(
+    r"\b(?:university|college|institute|institution|school|academy|"
+    r"polytechnic|seminary|conservatory|iit|nit|bits)\b",
+    re.IGNORECASE,
+)
+
 COMMON_SKILL_DELIMITERS: tuple[str, ...] = (",", "|", "•", "·", "▪", "◦", "●", ";", "/")
 
 LANGUAGE_PROFICIENCY_KEYWORDS: tuple[str, ...] = (

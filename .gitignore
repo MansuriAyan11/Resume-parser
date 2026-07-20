@@ -150,3 +150,6 @@ cython_debug/
 
 # VS Code
 .vscode/
+
+# Local QA / validation harness, snapshots and test artifacts (not shipped)
+validation/

@@ -10,6 +10,7 @@ from resume_parser.utils.constants import (
     ADDRESS_PATTERN,
     DATE_RANGE_PATTERN,
     JOB_TYPE_KEYWORDS,
+    ORG_SUFFIX_PATTERN,
 )
 from resume_parser.utils.date_utils import parse_date_range
 from resume_parser.utils.text_utils import clean_line, split_lines, truncate_text, is_likely_header
@@ -189,6 +190,13 @@ class ExperienceParser:
         )
 
         company, position, address = self._extract_company_and_position(header_lines, body_lines)
+        # Functional resumes and prose lines can smuggle full sentences into
+        # the label fields. A company name or job title is never a sentence,
+        # so drop prose rather than emit confidently wrong data.
+        if position and self._looks_like_prose(position):
+            position = None
+        if company and self._looks_like_prose(company):
+            company = None
         entry["position"] = position
         entry["company_name"] = company
         entry["company_address"] = address if address else self._extract_address(body_lines + header_lines)
@@ -200,10 +208,30 @@ class ExperienceParser:
         # Fallback for position if not set
         if not entry["position"] and header_lines:
             fallback = clean_line(header_lines[0])
-            if not entry["company_name"] or entry["company_name"].lower() not in fallback.lower():
+            if self._is_date_only(fallback) or self._looks_like_prose(fallback):
+                fallback = None
+            if fallback and (
+                not entry["company_name"]
+                or entry["company_name"].lower() not in fallback.lower()
+            ):
                 entry["position"] = fallback
 
         return entry
+
+    def _is_date_only(self, text: str) -> bool:
+        """True when a line carries only date/period information.
+
+        Prevents a bare date range such as "(July 20xx - Oct 20xx)" from
+        being promoted into the position field. Detection is structural:
+        strip any date range, then any residual digits/punctuation and
+        period keywords; if nothing meaningful remains, it was date-only.
+        """
+        residual = DATE_RANGE_PATTERN.sub("", clean_line(text))
+        residual = re.sub(
+            r"(?i)\b(?:present|current|ongoing|now|to|since|from)\b", "", residual
+        )
+        residual = re.sub(r"[\d\s,()\[\]\-–—~./:]", "", residual)
+        return not residual.strip()
 
     def _find_date_line_index(self, lines: list[str]) -> int | None:
         for index, line in enumerate(lines):
@@ -225,17 +253,20 @@ class ExperienceParser:
         cleaned_line = clean_line(header_line)
         cleaned_line = DATE_RANGE_PATTERN.sub("", cleaned_line).strip(" ,()-–—~")
 
-        def is_pure_location(part: str) -> bool:
-            part_clean = part.strip().lower()
-            if re.match(r"^[a-z]{2}$", part_clean):
+        def is_location_part(part: str, idx: int) -> bool:
+            """Structural location test (no hardcoded place names)."""
+            p = part.strip()
+            if re.fullmatch(r"[A-Za-z]{2}", p):  # region/state code
                 return True
-            known_locations = {"omaha", "bellevue", "altus", "grand island", "lincoln", "kearney", "nebraska", "oklahoma", "texas", "california", "new york", "ne", "ok", "tx", "ca", "ny"}
-            if part_clean in known_locations:
+            if re.fullmatch(r"\d{5}(?:-\d{4})?", p):  # ZIP / postal code
                 return True
-            if "," in part:
-                subparts = [sp.strip().lower() for sp in part.split(",")]
-                if all(sp in known_locations or re.match(r"^[a-z]{2}$", sp) or re.match(r"^\d{5}$", sp) for sp in subparts):
-                    return True
+            if ADDRESS_PATTERN.search(p):  # street address
+                return True
+            if re.search(r",\s*[A-Za-z]{2}\b", p):  # "City, ST" within one part
+                return True
+            # A locality immediately preceding a region/state code.
+            if idx + 1 < len(parts) and re.fullmatch(r"[A-Za-z]{2}", parts[idx + 1].strip()):
+                return True
             return False
 
         parts = []
@@ -265,8 +296,8 @@ class ExperienceParser:
         location_candidates = []
         company_candidates = []
 
-        for part in parts:
-            if is_pure_location(part) or ADDRESS_PATTERN.search(part):
+        for i, part in enumerate(parts):
+            if is_location_part(part, i):
                 location_candidates.append(part)
             elif self._looks_like_title_line(part):
                 position_candidates.append(part)
@@ -280,7 +311,7 @@ class ExperienceParser:
         if position_candidates:
             position = position_candidates[0]
         else:
-            if parts and not is_pure_location(parts[0]):
+            if parts and not is_location_part(parts[0], 0):
                 position = parts[0]
 
         org_keywords = {"mutual", "special", "olympics", "smc", "inc", "co", "ltd", "corp", "corporation", "group", "systems", "university", "college", "school", "church", "industries", "railroad", "district", "force", "trading", "tool", "power", "goodwill", "telemarketing", "united states", "us", "u.s.", "air force", "company", "firm", "association", "club", "hospital", "medical", "center", "agency", "department", "office", "division"}
@@ -324,7 +355,50 @@ class ExperienceParser:
                 company = position
                 position = None
 
+        # Multi-line layouts place the employer (and sometimes its location)
+        # on its own line beneath the job title. When the first header line
+        # only yielded a title, fill the company/address from the remaining
+        # header lines using structural cues (org suffix / address), never a
+        # fixed list of employer or city names.
+        if company is None:
+            for extra in header_lines[1:]:
+                extra_clean = clean_line(extra)
+                if not extra_clean or DATE_RANGE_PATTERN.search(extra_clean):
+                    continue
+                if self._looks_like_title_line(extra_clean):
+                    continue
+                has_org = bool(ORG_SUFFIX_PATTERN.search(extra_clean))
+                if ADDRESS_PATTERN.search(extra_clean) and not has_org:
+                    if not address:
+                        address = extra_clean
+                    continue
+                comp, addr = self._split_company_address(extra_clean)
+                if comp:
+                    company = comp
+                    if addr and not address:
+                        address = addr
+                    break
+
         return company, position, address
+
+    def _split_company_address(self, line: str) -> tuple[str | None, str | None]:
+        """Split "Company, City, ST" style lines into (company, address).
+
+        Purely structural: a trailing two-letter region code (optionally with
+        the preceding locality) is treated as the address; the remainder is the
+        company. Lines without such a trailer return (line, None).
+        """
+        cleaned = DATE_RANGE_PATTERN.sub("", clean_line(line)).strip(" ,()-–—~")
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        if not parts:
+            return None, None
+        address = None
+        if len(parts) >= 2 and re.fullmatch(r"[A-Za-z]{2}", parts[-1]):
+            address = ", ".join(parts[-2:])
+            parts = parts[:-2]
+        company = ", ".join(parts).strip() or None
+        return company, address
+
 
     def _extract_position(
         self, header_lines: list[str], body_lines: list[str]
@@ -443,13 +517,27 @@ class ExperienceParser:
             re.search(rf"\b{re.escape(keyword)}\b", lower) for keyword in TITLE_KEYWORDS
         )
 
+    def _looks_like_prose(self, text: str) -> bool:
+        """True when a label field is actually a free-text sentence.
+
+        Company names and job titles are compact labels, never full
+        sentences. A long clause that closes with sentence punctuation and
+        carries no title keyword is prose (common in functional resumes and
+        summary lines) and must not be emitted as a company or position.
+        """
+        cleaned = clean_line(text)
+        words = cleaned.split()
+        if len(words) < 7:
+            return False
+        if self._looks_like_title_line(cleaned):
+            return False
+        return cleaned.rstrip().endswith((".", "!", "?"))
+
     def _is_valid_entry(self, entry: ExperienceEntry) -> bool:
-        return any(
-            [
-                entry["company_name"],
-                entry["position"],
-                entry["start_date"],
-                entry["end_date"],
-                entry["company_about"],
-            ]
+        # A genuine experience entry must carry at least one substantive
+        # label (employer, role, or description). A record holding only a
+        # date is noise scavenged from prose, so reject it rather than
+        # fabricate an empty entry.
+        return bool(
+            entry["company_name"] or entry["position"] or entry["company_about"]
         )
