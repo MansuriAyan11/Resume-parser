@@ -166,6 +166,39 @@ INSTITUTION_KEYWORD_PATTERN = re.compile(
 
 COMMON_SKILL_DELIMITERS: tuple[str, ...] = (",", "|", "•", "·", "▪", "◦", "●", ";", "/")
 
+# Canonical spoken/written languages returned by the languages parser.
+KNOWN_LANGUAGES: tuple[str, ...] = (
+    "english",
+    "hindi",
+    "spanish",
+    "french",
+    "german",
+    "mandarin",
+    "chinese",
+    "japanese",
+    "korean",
+    "arabic",
+    "portuguese",
+    "russian",
+    "italian",
+    "bengali",
+    "tamil",
+    "telugu",
+    "marathi",
+    "gujarati",
+    "kannada",
+    "malayalam",
+    "punjabi",
+    "urdu",
+    "dutch",
+    "swedish",
+    "polish",
+    "turkish",
+    "vietnamese",
+    "thai",
+    "indonesian",
+)
+
 LANGUAGE_PROFICIENCY_KEYWORDS: tuple[str, ...] = (
     "native",
     "fluent",

@@ -5,42 +5,10 @@ from __future__ import annotations
 import logging
 import re
 
-from resume_parser.utils.constants import LANGUAGE_PROFICIENCY_KEYWORDS
+from resume_parser.utils.constants import KNOWN_LANGUAGES, LANGUAGE_PROFICIENCY_KEYWORDS
 from resume_parser.utils.text_utils import clean_line, deduplicate_preserve_order, split_lines
 
 logger = logging.getLogger(__name__)
-
-COMMON_LANGUAGES = (
-    "english",
-    "hindi",
-    "spanish",
-    "french",
-    "german",
-    "mandarin",
-    "chinese",
-    "japanese",
-    "korean",
-    "arabic",
-    "portuguese",
-    "russian",
-    "italian",
-    "bengali",
-    "tamil",
-    "telugu",
-    "marathi",
-    "gujarati",
-    "kannada",
-    "malayalam",
-    "punjabi",
-    "urdu",
-    "dutch",
-    "swedish",
-    "polish",
-    "turkish",
-    "vietnamese",
-    "thai",
-    "indonesian",
-)
 
 LANGUAGE_NOISE_PATTERNS = (
     r"^languages?:?$",
@@ -62,11 +30,7 @@ class LanguagesParser:
         for line in lines:
             if self._is_noise_line(line):
                 continue
-
-            if self._is_bullet_line(line) or self._has_delimiters(line):
-                languages.extend(self._parse_line(line))
-            else:
-                languages.extend(self._parse_line(line))
+            languages.extend(self._parse_line(line))
 
         cleaned = deduplicate_preserve_order(
             [lang for lang in (self._normalize_language(l) for l in languages) if lang]
@@ -90,15 +54,15 @@ class LanguagesParser:
                 results.append(known)
                 continue
 
-            generic = self._extract_language_before_proficiency(cleaned)
-            if generic:
-                results.append(generic)
+            extracted = self._extract_language_before_proficiency(cleaned)
+            if extracted:
+                results.append(extracted)
 
         return results
 
     def _match_known_language(self, text: str) -> str | None:
         lower = text.lower()
-        for language in COMMON_LANGUAGES:
+        for language in KNOWN_LANGUAGES:
             if re.search(rf"\b{re.escape(language)}\b", lower):
                 return language.title()
         return None
@@ -114,14 +78,11 @@ class LanguagesParser:
                     language_part,
                     flags=re.IGNORECASE,
                 )
-                if language_part and len(language_part) <= 30:
-                    return language_part.title()
+                if language_part:
+                    return self._match_known_language(language_part)
 
         if len(text.split()) <= 3 and text.replace("-", "").isalpha():
-            title_text = text.title()
-            if title_text.lower() in COMMON_LANGUAGES:
-                return title_text
-            return None
+            return self._match_known_language(text)
 
         return None
 
@@ -143,7 +104,7 @@ class LanguagesParser:
         language = language.strip(" .:-")
         if not language or len(language) < 2:
             return None
-        return language.title()
+        return self._match_known_language(language)
 
     def _is_bullet_line(self, line: str) -> bool:
         return bool(re.match(r"^[•\-\*\u2022\u2023\u25E6\u2043>\|]", line.strip()))
